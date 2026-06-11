@@ -71,7 +71,14 @@ export async function updateCardAction(
   slug: string,
   projectId: string,
   cardId: string,
-  patch: { title?: string; description?: string | null; assigneeId?: string | null },
+  patch: {
+    title?: string;
+    description?: string | null;
+    assigneeId?: string | null;
+    dueDate?: string | null;
+    priority?: "NONE" | "LOW" | "MEDIUM" | "HIGH";
+    labelIds?: string[];
+  },
 ): Promise<ActionResult> {
   const api = await client();
   if (!api) return fail("You must be signed in.");

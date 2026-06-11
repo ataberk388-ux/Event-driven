@@ -76,6 +76,19 @@ async function main() {
     );
   }
 
+  // Default label palette for the demo board (idempotent).
+  const existingLabels = await prisma.label.count({ where: { projectId: project.id } });
+  if (existingLabels === 0) {
+    await prisma.label.createMany({
+      data: [
+        { projectId: project.id, name: "Bug", color: "#ef4444" },
+        { projectId: project.id, name: "Feature", color: "#10b981" },
+        { projectId: project.id, name: "Urgent", color: "#f59e0b" },
+        { projectId: project.id, name: "Docs", color: "#3b82f6" },
+      ],
+    });
+  }
+
   // A collaborative document project (Faz 3) for the demo workspace.
   await prisma.project.upsert({
     where: { id: "seed-doc" },

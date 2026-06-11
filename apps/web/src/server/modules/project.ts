@@ -6,6 +6,12 @@ import { router, protectedProcedure } from "../trpc.js";
 import { membershipOrThrow } from "../shared/access.js";
 
 const DEFAULT_COLUMNS = ["To Do", "In Progress", "Done"];
+const DEFAULT_LABELS = [
+  { name: "Bug", color: "#ef4444" },
+  { name: "Feature", color: "#10b981" },
+  { name: "Urgent", color: "#f59e0b" },
+  { name: "Docs", color: "#3b82f6" },
+];
 
 export const projectRouter = router({
   listByWorkspace: protectedProcedure
@@ -41,7 +47,7 @@ export const projectRouter = router({
             workspaceId: input.workspaceId,
           },
         });
-        // A new Kanban board starts with the conventional three columns.
+        // A new Kanban board starts with the conventional columns + a label palette.
         if (project.type === ProjectType.BOARD) {
           await tx.boardColumn.createMany({
             data: DEFAULT_COLUMNS.map((name, position) => ({
@@ -49,6 +55,9 @@ export const projectRouter = router({
               name,
               position,
             })),
+          });
+          await tx.label.createMany({
+            data: DEFAULT_LABELS.map((l) => ({ projectId: project.id, ...l })),
           });
         }
         await tx.outboxEvent.create({

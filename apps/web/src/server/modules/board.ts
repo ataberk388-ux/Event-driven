@@ -11,17 +11,27 @@ export const boardRouter = router({
     .input(z.object({ projectId: z.string() }))
     .query(async ({ ctx, input }) => {
       const { project } = await projectCtxOrThrow(ctx.userId, input.projectId);
-      const columns = await prisma.boardColumn.findMany({
-        where: { projectId: project.id },
-        orderBy: { position: "asc" },
-        include: {
-          cards: {
-            orderBy: { position: "asc" },
-            include: { assignee: { select: { id: true, name: true, email: true, image: true } } },
+      const [columns, labels] = await Promise.all([
+        prisma.boardColumn.findMany({
+          where: { projectId: project.id },
+          orderBy: { position: "asc" },
+          include: {
+            cards: {
+              orderBy: { position: "asc" },
+              include: {
+                assignee: { select: { id: true, name: true, email: true, image: true } },
+                labels: { select: { id: true, name: true, color: true } },
+              },
+            },
           },
-        },
-      });
-      return { project: { id: project.id, name: project.name, type: project.type }, columns };
+        }),
+        prisma.label.findMany({ where: { projectId: project.id }, orderBy: { name: "asc" } }),
+      ]);
+      return {
+        project: { id: project.id, name: project.name, type: project.type },
+        columns,
+        labels,
+      };
     }),
 
   createColumn: protectedProcedure
@@ -38,7 +48,9 @@ export const boardRouter = router({
     }),
 
   renameColumn: protectedProcedure
-    .input(z.object({ projectId: z.string(), columnId: z.string(), name: z.string().min(1).max(40) }))
+    .input(
+      z.object({ projectId: z.string(), columnId: z.string(), name: z.string().min(1).max(40) }),
+    )
     .mutation(async ({ ctx, input }) => {
       const { membership } = await projectCtxOrThrow(ctx.userId, input.projectId);
       requireEdit(membership.role);
@@ -69,7 +81,9 @@ export const boardRouter = router({
     }),
 
   createCard: protectedProcedure
-    .input(z.object({ projectId: z.string(), columnId: z.string(), title: z.string().min(1).max(200) }))
+    .input(
+      z.object({ projectId: z.string(), columnId: z.string(), title: z.string().min(1).max(200) }),
+    )
     .mutation(async ({ ctx, input }) => {
       const { project, membership } = await projectCtxOrThrow(ctx.userId, input.projectId);
       requireEdit(membership.role);
@@ -197,6 +211,9 @@ export const boardRouter = router({
         title: z.string().min(1).max(200).optional(),
         description: z.string().max(2000).nullable().optional(),
         assigneeId: z.string().nullable().optional(),
+        dueDate: z.string().datetime().nullable().optional(),
+        priority: z.enum(["NONE", "LOW", "MEDIUM", "HIGH"]).optional(),
+        labelIds: z.array(z.string()).optional(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -223,10 +240,35 @@ export const boardRouter = router({
           ...(input.title !== undefined ? { title: input.title } : {}),
           ...(input.description !== undefined ? { description: input.description } : {}),
           ...(input.assigneeId !== undefined ? { assigneeId: input.assigneeId } : {}),
+          ...(input.dueDate !== undefined
+            ? { dueDate: input.dueDate ? new Date(input.dueDate) : null }
+            : {}),
+          ...(input.priority !== undefined ? { priority: input.priority } : {}),
+          ...(input.labelIds !== undefined
+            ? { labels: { set: input.labelIds.map((id) => ({ id })) } }
+            : {}),
         },
       });
       publishBoardChange(input.projectId, { kind: "card.updated", actorId: ctx.userId });
       return updated;
+    }),
+
+  createLabel: protectedProcedure
+    .input(
+      z.object({
+        projectId: z.string(),
+        name: z.string().min(1).max(30),
+        color: z.string().regex(/^#[0-9a-fA-F]{6}$/),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const { membership } = await projectCtxOrThrow(ctx.userId, input.projectId);
+      requireEdit(membership.role);
+      const label = await prisma.label.create({
+        data: { projectId: input.projectId, name: input.name, color: input.color },
+      });
+      publishBoardChange(input.projectId, { kind: "label.created", actorId: ctx.userId });
+      return label;
     }),
 
   deleteCard: protectedProcedure

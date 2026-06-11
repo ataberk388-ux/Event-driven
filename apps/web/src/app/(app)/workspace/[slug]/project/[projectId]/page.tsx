@@ -4,7 +4,7 @@ import { prisma } from "@synapse/db";
 import { can } from "@synapse/auth";
 import { Badge } from "@/components/ui/badge";
 import { auth } from "@/auth";
-import { KanbanBoard, type ColumnView, type Member } from "./kanban-board";
+import { KanbanBoard, type ColumnView, type Member, type LabelView } from "./kanban-board";
 import { DocEditor } from "./doc-editor";
 import { CanvasBoard } from "./canvas-board";
 
@@ -27,12 +27,16 @@ export default async function BoardPage({
   const project = await prisma.project.findFirst({
     where: { id: projectId, workspaceId: workspace.id },
     include: {
+      labels: { orderBy: { name: "asc" } },
       columns: {
         orderBy: { position: "asc" },
         include: {
           cards: {
             orderBy: { position: "asc" },
-            include: { assignee: { select: { id: true, name: true, email: true } } },
+            include: {
+              assignee: { select: { id: true, name: true, email: true } },
+              labels: { select: { id: true, name: true, color: true } },
+            },
           },
         },
       },
@@ -53,6 +57,12 @@ export default async function BoardPage({
     email: m.user.email,
   }));
 
+  const boardLabels: LabelView[] = project.labels.map((l) => ({
+    id: l.id,
+    name: l.name,
+    color: l.color,
+  }));
+
   const columns: ColumnView[] = project.columns.map((col) => ({
     id: col.id,
     name: col.name,
@@ -60,6 +70,9 @@ export default async function BoardPage({
       id: card.id,
       title: card.title,
       description: card.description,
+      dueDate: card.dueDate ? card.dueDate.toISOString() : null,
+      priority: card.priority,
+      labels: card.labels.map((l) => ({ id: l.id, name: l.name, color: l.color })),
       assignee: card.assignee
         ? { id: card.assignee.id, name: card.assignee.name, email: card.assignee.email }
         : null,
@@ -103,6 +116,7 @@ export default async function BoardPage({
           canEdit={canEdit}
           initialColumns={columns}
           members={members as Member[]}
+          boardLabels={boardLabels}
           currentUser={{
             id: userId,
             name: session!.user.name ?? session!.user.email ?? "Someone",

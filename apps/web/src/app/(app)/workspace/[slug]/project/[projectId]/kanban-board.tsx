@@ -80,14 +80,39 @@ function PresenceBar({ users }: { users: { userId: string; name: string }[] }) {
   );
 }
 
+export type Priority = "NONE" | "LOW" | "MEDIUM" | "HIGH";
+export type LabelView = { id: string; name: string; color: string };
 export type CardView = {
   id: string;
   title: string;
   description: string | null;
+  dueDate: string | null;
+  priority: Priority;
+  labels: LabelView[];
   assignee: { id: string; name: string | null; email: string } | null;
 };
 export type ColumnView = { id: string; name: string; cards: CardView[] };
 export type Member = { id: string; name: string; email: string };
+
+const PRIORITY_META: Record<Priority, { label: string; color: string } | null> = {
+  NONE: null,
+  LOW: { label: "Low", color: "#9ca3af" },
+  MEDIUM: { label: "Medium", color: "#f59e0b" },
+  HIGH: { label: "High", color: "#ef4444" },
+};
+
+function isOverdue(due: string | null): boolean {
+  return due != null && new Date(due).getTime() < Date.now();
+}
+
+function formatDue(due: string): string {
+  return new Date(due).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+/** ISO datetime → yyyy-mm-dd for <input type="date">. */
+function toDateInput(due: string | null): string {
+  return due ? new Date(due).toISOString().slice(0, 10) : "";
+}
 
 function columnIdOf(columns: ColumnView[], id: string): string | null {
   if (columns.some((c) => c.id === id)) return id;
@@ -136,9 +161,42 @@ function SortableCard({
       onClick={() => onOpen(card)}
       className="group relative cursor-grab rounded-md border bg-card p-3 text-sm shadow-sm active:cursor-grabbing"
     >
+      {card.labels.length > 0 && (
+        <div className="mb-1.5 flex flex-wrap gap-1">
+          {card.labels.map((l) => (
+            <span
+              key={l.id}
+              title={l.name}
+              className="h-1.5 w-8 rounded-full"
+              style={{ backgroundColor: l.color }}
+            />
+          ))}
+        </div>
+      )}
       <p className="pr-5">{card.title}</p>
-      <div className="mt-2 flex items-center gap-1">
+      <div className="mt-2 flex flex-wrap items-center gap-2">
         {card.assignee && <Avatar name={card.assignee.name ?? card.assignee.email} />}
+        {PRIORITY_META[card.priority] && (
+          <span
+            className="flex items-center gap-1 text-[10px] font-medium"
+            style={{ color: PRIORITY_META[card.priority]!.color }}
+          >
+            <span
+              className="h-2 w-2 rounded-full"
+              style={{ backgroundColor: PRIORITY_META[card.priority]!.color }}
+            />
+            {PRIORITY_META[card.priority]!.label}
+          </span>
+        )}
+        {card.dueDate && (
+          <span
+            className={`rounded px-1.5 py-0.5 text-[10px] ${
+              isOverdue(card.dueDate) ? "bg-red-100 text-red-700" : "bg-muted text-muted-foreground"
+            }`}
+          >
+            {formatDue(card.dueDate)}
+          </span>
+        )}
         {card.description && <span className="text-xs text-muted-foreground">📝</span>}
       </div>
       {canEdit && (
@@ -194,7 +252,10 @@ function Column({
       </div>
 
       <div ref={setNodeRef} className="flex min-h-2 flex-1 flex-col gap-2 px-3 pb-2">
-        <SortableContext items={column.cards.map((c) => c.id)} strategy={verticalListSortingStrategy}>
+        <SortableContext
+          items={column.cards.map((c) => c.id)}
+          strategy={verticalListSortingStrategy}
+        >
           {column.cards.map((card) => (
             <SortableCard
               key={card.id}
@@ -230,6 +291,7 @@ function Column({
 function CardDetailDialog({
   card,
   members,
+  boardLabels,
   canEdit,
   onClose,
   onSave,
@@ -237,22 +299,40 @@ function CardDetailDialog({
 }: {
   card: CardView | null;
   members: Member[];
+  boardLabels: LabelView[];
   canEdit: boolean;
   onClose: () => void;
-  onSave: (patch: { title?: string; description?: string | null; assigneeId?: string | null }) => void;
+  onSave: (patch: {
+    title?: string;
+    description?: string | null;
+    assigneeId?: string | null;
+    dueDate?: string | null;
+    priority?: Priority;
+    labelIds?: string[];
+  }) => void;
   onDelete: (id: string) => void;
 }) {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [assigneeId, setAssigneeId] = useState("none");
+  const [due, setDue] = useState("");
+  const [priority, setPriority] = useState<Priority>("NONE");
+  const [labelIds, setLabelIds] = useState<string[]>([]);
 
   useEffect(() => {
     if (card) {
       setTitle(card.title);
       setDescription(card.description ?? "");
       setAssigneeId(card.assignee?.id ?? "none");
+      setDue(toDateInput(card.dueDate));
+      setPriority(card.priority);
+      setLabelIds(card.labels.map((l) => l.id));
     }
   }, [card]);
+
+  function toggleLabel(id: string) {
+    setLabelIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  }
 
   function save() {
     if (!card) return;
@@ -260,6 +340,9 @@ function CardDetailDialog({
       title: title.trim() || card.title,
       description: description.trim() === "" ? null : description.trim(),
       assigneeId: assigneeId === "none" ? null : assigneeId,
+      dueDate: due ? new Date(due).toISOString() : null,
+      priority,
+      labelIds,
     });
     onClose();
   }
@@ -284,6 +367,61 @@ function CardDetailDialog({
                 disabled={!canEdit}
                 placeholder="Add more detail…"
               />
+            </div>
+            {boardLabels.length > 0 && (
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium text-muted-foreground">Labels</label>
+                <div className="flex flex-wrap gap-1.5">
+                  {boardLabels.map((l) => {
+                    const active = labelIds.includes(l.id);
+                    return (
+                      <button
+                        key={l.id}
+                        type="button"
+                        disabled={!canEdit}
+                        onClick={() => toggleLabel(l.id)}
+                        className="rounded-full px-2 py-0.5 text-xs font-medium transition"
+                        style={
+                          active
+                            ? { backgroundColor: l.color, color: "white" }
+                            : { border: `1px solid ${l.color}`, color: l.color }
+                        }
+                      >
+                        {l.name}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium text-muted-foreground">Due date</label>
+                <Input
+                  type="date"
+                  value={due}
+                  onChange={(e) => setDue(e.target.value)}
+                  disabled={!canEdit}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium text-muted-foreground">Priority</label>
+                <Select
+                  value={priority}
+                  onValueChange={(v) => setPriority(v as Priority)}
+                  disabled={!canEdit}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="NONE">None</SelectItem>
+                    <SelectItem value="LOW">Low</SelectItem>
+                    <SelectItem value="MEDIUM">Medium</SelectItem>
+                    <SelectItem value="HIGH">High</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
             <div className="space-y-1.5">
               <label className="text-xs font-medium text-muted-foreground">Assignee</label>
@@ -331,6 +469,7 @@ export function KanbanBoard({
   canEdit,
   initialColumns,
   members,
+  boardLabels,
   currentUser,
 }: {
   slug: string;
@@ -338,6 +477,7 @@ export function KanbanBoard({
   canEdit: boolean;
   initialColumns: ColumnView[];
   members: Member[];
+  boardLabels: LabelView[];
   currentUser: { id: string; name: string };
 }) {
   const router = useRouter();
@@ -346,6 +486,22 @@ export function KanbanBoard({
   const [activeCard, setActiveCard] = useState<CardView | null>(null);
   const [detailCard, setDetailCard] = useState<CardView | null>(null);
   const [newColumn, setNewColumn] = useState("");
+
+  // ---- Filters (view-only; drag still operates on the full column state) ----
+  const [filterLabel, setFilterLabel] = useState("all");
+  const [filterAssignee, setFilterAssignee] = useState("all");
+  const [overdueOnly, setOverdueOnly] = useState(false);
+  const filtersActive = filterLabel !== "all" || filterAssignee !== "all" || overdueOnly;
+
+  const displayColumns = columns.map((col) => ({
+    ...col,
+    cards: col.cards.filter((c) => {
+      if (filterLabel !== "all" && !c.labels.some((l) => l.id === filterLabel)) return false;
+      if (filterAssignee !== "all" && c.assignee?.id !== filterAssignee) return false;
+      if (overdueOnly && !isOverdue(c.dueDate)) return false;
+      return true;
+    }),
+  }));
 
   // Live presence + remote-change refresh over the realtime WS hub.
   const present = useBoardSocket(projectId, currentUser);
@@ -385,9 +541,13 @@ export function KanbanBoard({
       let overIndex = to.cards.findIndex((c) => c.id === overId);
       if (overIndex === -1) overIndex = to.cards.length;
       return prev.map((col) => {
-        if (col.id === fromCol) return { ...col, cards: col.cards.filter((c) => c.id !== activeId) };
+        if (col.id === fromCol)
+          return { ...col, cards: col.cards.filter((c) => c.id !== activeId) };
         if (col.id === toCol)
-          return { ...col, cards: [...col.cards.slice(0, overIndex), card, ...col.cards.slice(overIndex)] };
+          return {
+            ...col,
+            cards: [...col.cards.slice(0, overIndex), card, ...col.cards.slice(overIndex)],
+          };
         return col;
       });
     });
@@ -439,6 +599,9 @@ export function KanbanBoard({
     title?: string;
     description?: string | null;
     assigneeId?: string | null;
+    dueDate?: string | null;
+    priority?: Priority;
+    labelIds?: string[];
   }) {
     if (!detailCard) return;
     const id = detailCard.id;
@@ -473,57 +636,110 @@ export function KanbanBoard({
 
   return (
     <>
-    <DndContext
-      sensors={sensors}
-      collisionDetection={closestCorners}
-      onDragStart={onDragStart}
-      onDragOver={onDragOver}
-      onDragEnd={onDragEnd}
-    >
-      <div className="mb-4 flex h-7 items-center">
-        <PresenceBar users={present} />
-      </div>
-
-      <div className="flex gap-4 overflow-x-auto pb-4">
-        {columns.map((column) => (
-          <Column
-            key={column.id}
-            column={column}
-            canEdit={canEdit}
-            onAddCard={addCard}
-            onDeleteCard={deleteCard}
-            onOpenCard={setDetailCard}
-          />
-        ))}
-
-        {canEdit && (
-          <div className="w-72 shrink-0">
-            <div className="flex gap-1">
-              <Input
-                value={newColumn}
-                onChange={(e) => setNewColumn(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && addColumn()}
-                placeholder="Add a column…"
-                className="h-9"
-              />
-              <Button variant="secondary" onClick={addColumn}>
-                Add
+      <DndContext
+        sensors={sensors}
+        collisionDetection={closestCorners}
+        onDragStart={onDragStart}
+        onDragOver={onDragOver}
+        onDragEnd={onDragEnd}
+      >
+        <div className="mb-3 flex flex-wrap items-center gap-3">
+          <PresenceBar users={present} />
+          <div className="ml-auto flex flex-wrap items-center gap-2">
+            <Select value={filterLabel} onValueChange={setFilterLabel}>
+              <SelectTrigger className="h-8 w-32 text-xs">
+                <SelectValue placeholder="Label" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All labels</SelectItem>
+                {boardLabels.map((l) => (
+                  <SelectItem key={l.id} value={l.id}>
+                    {l.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Select value={filterAssignee} onValueChange={setFilterAssignee}>
+              <SelectTrigger className="h-8 w-32 text-xs">
+                <SelectValue placeholder="Assignee" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">Anyone</SelectItem>
+                {members.map((m) => (
+                  <SelectItem key={m.id} value={m.id}>
+                    {m.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Button
+              size="sm"
+              variant={overdueOnly ? "default" : "secondary"}
+              className="h-8 text-xs"
+              onClick={() => setOverdueOnly((v) => !v)}
+            >
+              Overdue
+            </Button>
+            {filtersActive && (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-8 text-xs"
+                onClick={() => {
+                  setFilterLabel("all");
+                  setFilterAssignee("all");
+                  setOverdueOnly(false);
+                }}
+              >
+                Clear
               </Button>
-            </div>
+            )}
           </div>
-        )}
-      </div>
+        </div>
 
-      <DragOverlay>
-        {activeCard ? (
-          <div className="rounded-md border bg-card p-3 text-sm shadow-lg">{activeCard.title}</div>
-        ) : null}
-      </DragOverlay>
-    </DndContext>
+        <div className="flex gap-4 overflow-x-auto pb-4">
+          {displayColumns.map((column) => (
+            <Column
+              key={column.id}
+              column={column}
+              canEdit={canEdit}
+              onAddCard={addCard}
+              onDeleteCard={deleteCard}
+              onOpenCard={setDetailCard}
+            />
+          ))}
+
+          {canEdit && (
+            <div className="w-72 shrink-0">
+              <div className="flex gap-1">
+                <Input
+                  value={newColumn}
+                  onChange={(e) => setNewColumn(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && addColumn()}
+                  placeholder="Add a column…"
+                  className="h-9"
+                />
+                <Button variant="secondary" onClick={addColumn}>
+                  Add
+                </Button>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <DragOverlay>
+          {activeCard ? (
+            <div className="rounded-md border bg-card p-3 text-sm shadow-lg">
+              {activeCard.title}
+            </div>
+          ) : null}
+        </DragOverlay>
+      </DndContext>
 
       <CardDetailDialog
         card={detailCard}
         members={members}
+        boardLabels={boardLabels}
         canEdit={canEdit}
         onClose={() => setDetailCard(null)}
         onSave={saveCard}
