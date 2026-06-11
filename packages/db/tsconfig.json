@@ -1,0 +1,10 @@
+{
+  "extends": "@synapse/config/tsconfig.node.json",
+  "compilerOptions": {
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "rootDir": ".",
+    "noEmit": true
+  },
+  "include": ["src/**/*.ts", "prisma/**/*.ts"]
+}

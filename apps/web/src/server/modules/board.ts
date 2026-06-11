@@ -1,0 +1,245 @@
+import { z } from "zod";
+import { TRPCError } from "@trpc/server";
+import { prisma } from "@synapse/db";
+import { router, protectedProcedure } from "../trpc.js";
+import { projectCtxOrThrow, requireEdit } from "../shared/access.js";
+import { publishBoardChange } from "../realtime.js";
+
+export const boardRouter = router({
+  // Full board snapshot: ordered columns, each with its ordered cards.
+  get: protectedProcedure
+    .input(z.object({ projectId: z.string() }))
+    .query(async ({ ctx, input }) => {
+      const { project } = await projectCtxOrThrow(ctx.userId, input.projectId);
+      const columns = await prisma.boardColumn.findMany({
+        where: { projectId: project.id },
+        orderBy: { position: "asc" },
+        include: {
+          cards: {
+            orderBy: { position: "asc" },
+            include: { assignee: { select: { id: true, name: true, email: true, image: true } } },
+          },
+        },
+      });
+      return { project: { id: project.id, name: project.name, type: project.type }, columns };
+    }),
+
+  createColumn: protectedProcedure
+    .input(z.object({ projectId: z.string(), name: z.string().min(1).max(40) }))
+    .mutation(async ({ ctx, input }) => {
+      const { membership } = await projectCtxOrThrow(ctx.userId, input.projectId);
+      requireEdit(membership.role);
+      const position = await prisma.boardColumn.count({ where: { projectId: input.projectId } });
+      const created = await prisma.boardColumn.create({
+        data: { projectId: input.projectId, name: input.name, position },
+      });
+      publishBoardChange(input.projectId, { kind: "column.created", actorId: ctx.userId });
+      return created;
+    }),
+
+  renameColumn: protectedProcedure
+    .input(z.object({ projectId: z.string(), columnId: z.string(), name: z.string().min(1).max(40) }))
+    .mutation(async ({ ctx, input }) => {
+      const { membership } = await projectCtxOrThrow(ctx.userId, input.projectId);
+      requireEdit(membership.role);
+      const column = await prisma.boardColumn.findUnique({ where: { id: input.columnId } });
+      if (!column || column.projectId !== input.projectId) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Column not found" });
+      }
+      const updated = await prisma.boardColumn.update({
+        where: { id: input.columnId },
+        data: { name: input.name },
+      });
+      publishBoardChange(input.projectId, { kind: "column.renamed", actorId: ctx.userId });
+      return updated;
+    }),
+
+  deleteColumn: protectedProcedure
+    .input(z.object({ projectId: z.string(), columnId: z.string() }))
+    .mutation(async ({ ctx, input }) => {
+      const { membership } = await projectCtxOrThrow(ctx.userId, input.projectId);
+      requireEdit(membership.role);
+      const column = await prisma.boardColumn.findUnique({ where: { id: input.columnId } });
+      if (!column || column.projectId !== input.projectId) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Column not found" });
+      }
+      await prisma.boardColumn.delete({ where: { id: input.columnId } });
+      publishBoardChange(input.projectId, { kind: "column.deleted", actorId: ctx.userId });
+      return { ok: true };
+    }),
+
+  createCard: protectedProcedure
+    .input(z.object({ projectId: z.string(), columnId: z.string(), title: z.string().min(1).max(200) }))
+    .mutation(async ({ ctx, input }) => {
+      const { project, membership } = await projectCtxOrThrow(ctx.userId, input.projectId);
+      requireEdit(membership.role);
+      const column = await prisma.boardColumn.findUnique({ where: { id: input.columnId } });
+      if (!column || column.projectId !== input.projectId) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Column not found" });
+      }
+
+      const position = await prisma.card.count({ where: { columnId: input.columnId } });
+      const card = await prisma.$transaction(async (tx) => {
+        const created = await tx.card.create({
+          data: {
+            projectId: input.projectId,
+            columnId: input.columnId,
+            title: input.title,
+            position,
+            createdById: ctx.userId,
+          },
+        });
+        await tx.outboxEvent.create({
+          data: {
+            aggregateType: "task",
+            aggregateId: created.id,
+            eventType: "TaskCreated",
+            payload: {
+              taskId: created.id,
+              projectId: input.projectId,
+              workspaceId: project.workspaceId,
+              title: created.title,
+              createdBy: ctx.userId,
+              actorId: ctx.userId,
+            },
+          },
+        });
+        return created;
+      });
+      publishBoardChange(input.projectId, { kind: "card.created", actorId: ctx.userId });
+      return card;
+    }),
+
+  // Move a card to a column at a target index, renumbering affected columns.
+  moveCard: protectedProcedure
+    .input(
+      z.object({
+        projectId: z.string(),
+        cardId: z.string(),
+        toColumnId: z.string(),
+        toIndex: z.number().int().min(0),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const { project, membership } = await projectCtxOrThrow(ctx.userId, input.projectId);
+      requireEdit(membership.role);
+
+      const result = await prisma.$transaction(async (tx) => {
+        const card = await tx.card.findUnique({ where: { id: input.cardId } });
+        if (!card || card.projectId !== input.projectId) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Card not found" });
+        }
+        const target = await tx.boardColumn.findUnique({ where: { id: input.toColumnId } });
+        if (!target || target.projectId !== input.projectId) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Column not found" });
+        }
+        const fromColumnId = card.columnId;
+
+        // Reinsert the card into the target column's order at the clamped index.
+        const targets = await tx.card.findMany({
+          where: { columnId: input.toColumnId, id: { not: input.cardId } },
+          orderBy: { position: "asc" },
+        });
+        const index = Math.min(input.toIndex, targets.length);
+        const ordered = [
+          ...targets.slice(0, index).map((c) => c.id),
+          input.cardId,
+          ...targets.slice(index).map((c) => c.id),
+        ];
+        for (let i = 0; i < ordered.length; i++) {
+          await tx.card.update({
+            where: { id: ordered[i] },
+            data:
+              ordered[i] === input.cardId
+                ? { position: i, columnId: input.toColumnId }
+                : { position: i },
+          });
+        }
+        // Close the gap left in the source column.
+        if (fromColumnId !== input.toColumnId) {
+          const src = await tx.card.findMany({
+            where: { columnId: fromColumnId },
+            orderBy: { position: "asc" },
+          });
+          let i = 0;
+          for (const c of src) {
+            await tx.card.update({ where: { id: c.id }, data: { position: i++ } });
+          }
+        }
+
+        await tx.outboxEvent.create({
+          data: {
+            aggregateType: "task",
+            aggregateId: input.cardId,
+            eventType: "TaskMoved",
+            payload: {
+              taskId: input.cardId,
+              projectId: input.projectId,
+              workspaceId: project.workspaceId,
+              title: card.title,
+              fromColumn: fromColumnId,
+              toColumn: input.toColumnId,
+              actorId: ctx.userId,
+            },
+          },
+        });
+        return { ok: true };
+      });
+      publishBoardChange(input.projectId, { kind: "card.moved", actorId: ctx.userId });
+      return result;
+    }),
+
+  updateCard: protectedProcedure
+    .input(
+      z.object({
+        projectId: z.string(),
+        cardId: z.string(),
+        title: z.string().min(1).max(200).optional(),
+        description: z.string().max(2000).nullable().optional(),
+        assigneeId: z.string().nullable().optional(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const { project, membership } = await projectCtxOrThrow(ctx.userId, input.projectId);
+      requireEdit(membership.role);
+      const card = await prisma.card.findUnique({ where: { id: input.cardId } });
+      if (!card || card.projectId !== input.projectId) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Card not found" });
+      }
+      // An assignee must be a member of the board's workspace.
+      if (input.assigneeId) {
+        const isMember = await prisma.membership.findUnique({
+          where: {
+            userId_workspaceId: { userId: input.assigneeId, workspaceId: project.workspaceId },
+          },
+        });
+        if (!isMember) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Assignee is not a member." });
+        }
+      }
+      const updated = await prisma.card.update({
+        where: { id: input.cardId },
+        data: {
+          ...(input.title !== undefined ? { title: input.title } : {}),
+          ...(input.description !== undefined ? { description: input.description } : {}),
+          ...(input.assigneeId !== undefined ? { assigneeId: input.assigneeId } : {}),
+        },
+      });
+      publishBoardChange(input.projectId, { kind: "card.updated", actorId: ctx.userId });
+      return updated;
+    }),
+
+  deleteCard: protectedProcedure
+    .input(z.object({ projectId: z.string(), cardId: z.string() }))
+    .mutation(async ({ ctx, input }) => {
+      const { membership } = await projectCtxOrThrow(ctx.userId, input.projectId);
+      requireEdit(membership.role);
+      const card = await prisma.card.findUnique({ where: { id: input.cardId } });
+      if (!card || card.projectId !== input.projectId) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Card not found" });
+      }
+      await prisma.card.delete({ where: { id: input.cardId } });
+      publishBoardChange(input.projectId, { kind: "card.deleted", actorId: ctx.userId });
+      return { ok: true };
+    }),
+});

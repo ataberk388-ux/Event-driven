@@ -1,0 +1,13 @@
+{
+  "name": "@synapse/config",
+  "version": "0.0.0",
+  "private": true,
+  "files": [
+    "tsconfig.base.json",
+    "tsconfig.nextjs.json",
+    "tsconfig.node.json"
+  ],
+  "devDependencies": {
+    "typescript": "^5.7.3"
+  }
+}
