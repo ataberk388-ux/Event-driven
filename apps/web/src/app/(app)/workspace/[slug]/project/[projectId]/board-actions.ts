@@ -106,3 +106,57 @@ export async function createColumnAction(
     return fail((e as Error).message || "Could not create column.");
   }
 }
+
+export type CommentView = {
+  id: string;
+  body: string;
+  createdAt: string;
+  authorName: string;
+  mine: boolean;
+};
+
+export async function loadCommentsAction(
+  projectId: string,
+  cardId: string,
+): Promise<CommentView[]> {
+  const api = await client();
+  if (!api) return [];
+  try {
+    return await api.board.listComments({ projectId, cardId });
+  } catch {
+    return [];
+  }
+}
+
+export async function addCommentAction(
+  slug: string,
+  projectId: string,
+  cardId: string,
+  body: string,
+): Promise<ActionResult> {
+  const api = await client();
+  if (!api) return fail("You must be signed in.");
+  try {
+    await api.board.addComment({ projectId, cardId, body });
+    revalidatePath(boardPath(slug, projectId));
+    return ok();
+  } catch (e) {
+    return fail((e as Error).message || "Could not add comment.");
+  }
+}
+
+export async function deleteCommentAction(
+  slug: string,
+  projectId: string,
+  commentId: string,
+): Promise<ActionResult> {
+  const api = await client();
+  if (!api) return fail("You must be signed in.");
+  try {
+    await api.board.deleteComment({ projectId, commentId });
+    revalidatePath(boardPath(slug, projectId));
+    return ok();
+  } catch (e) {
+    return fail((e as Error).message || "Could not delete comment.");
+  }
+}

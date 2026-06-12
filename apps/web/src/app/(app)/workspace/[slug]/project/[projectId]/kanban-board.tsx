@@ -46,6 +46,10 @@ import {
   deleteCardAction,
   updateCardAction,
   createColumnAction,
+  loadCommentsAction,
+  addCommentAction,
+  deleteCommentAction,
+  type CommentView,
 } from "./board-actions";
 
 function initials(name: string): string {
@@ -290,6 +294,8 @@ function Column({
 
 function CardDetailDialog({
   card,
+  slug,
+  projectId,
   members,
   boardLabels,
   canEdit,
@@ -298,6 +304,8 @@ function CardDetailDialog({
   onDelete,
 }: {
   card: CardView | null;
+  slug: string;
+  projectId: string;
   members: Member[];
   boardLabels: LabelView[];
   canEdit: boolean;
@@ -318,20 +326,49 @@ function CardDetailDialog({
   const [due, setDue] = useState("");
   const [priority, setPriority] = useState<Priority>("NONE");
   const [labelIds, setLabelIds] = useState<string[]>([]);
+  const [comments, setComments] = useState<CommentView[]>([]);
+  const [commentBody, setCommentBody] = useState("");
+  const [, startComment] = useTransition();
 
   useEffect(() => {
-    if (card) {
-      setTitle(card.title);
-      setDescription(card.description ?? "");
-      setAssigneeId(card.assignee?.id ?? "none");
-      setDue(toDateInput(card.dueDate));
-      setPriority(card.priority);
-      setLabelIds(card.labels.map((l) => l.id));
-    }
-  }, [card]);
+    if (!card) return;
+    setTitle(card.title);
+    setDescription(card.description ?? "");
+    setAssigneeId(card.assignee?.id ?? "none");
+    setDue(toDateInput(card.dueDate));
+    setPriority(card.priority);
+    setLabelIds(card.labels.map((l) => l.id));
+    setCommentBody("");
+    setComments([]);
+    void loadCommentsAction(projectId, card.id).then(setComments);
+  }, [card, projectId]);
 
   function toggleLabel(id: string) {
     setLabelIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  }
+
+  function reloadComments() {
+    if (card) void loadCommentsAction(projectId, card.id).then(setComments);
+  }
+
+  function submitComment() {
+    if (!card) return;
+    const body = commentBody.trim();
+    if (!body) return;
+    setCommentBody("");
+    startComment(async () => {
+      const res = await addCommentAction(slug, projectId, card.id, body);
+      if (!res.ok) toast.error(res.error);
+      reloadComments();
+    });
+  }
+
+  function removeComment(id: string) {
+    startComment(async () => {
+      const res = await deleteCommentAction(slug, projectId, id);
+      if (!res.ok) toast.error(res.error);
+      reloadComments();
+    });
   }
 
   function save() {
@@ -438,6 +475,53 @@ function CardDetailDialog({
                   ))}
                 </SelectContent>
               </Select>
+            </div>
+
+            <div className="space-y-2 border-t pt-3">
+              <label className="text-xs font-medium text-muted-foreground">
+                Comments ({comments.length})
+              </label>
+              <ul className="max-h-40 space-y-2 overflow-y-auto">
+                {comments.length === 0 ? (
+                  <li className="text-xs text-muted-foreground">No comments yet.</li>
+                ) : (
+                  comments.map((c) => (
+                    <li key={c.id} className="group flex items-start justify-between gap-2 text-sm">
+                      <div>
+                        <span className="font-medium">{c.authorName}</span>{" "}
+                        <span className="text-xs text-muted-foreground">
+                          {new Date(c.createdAt).toLocaleString()}
+                        </span>
+                        <p className="whitespace-pre-wrap">{c.body}</p>
+                      </div>
+                      {c.mine && (
+                        <button
+                          type="button"
+                          onClick={() => removeComment(c.id)}
+                          className="hidden shrink-0 text-muted-foreground hover:text-destructive group-hover:block"
+                          aria-label="Delete comment"
+                        >
+                          ×
+                        </button>
+                      )}
+                    </li>
+                  ))
+                )}
+              </ul>
+              {canEdit && (
+                <div className="flex gap-1">
+                  <Input
+                    value={commentBody}
+                    onChange={(e) => setCommentBody(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && submitComment()}
+                    placeholder="Write a comment…"
+                    className="h-8 text-sm"
+                  />
+                  <Button size="sm" className="h-8" onClick={submitComment}>
+                    Send
+                  </Button>
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -738,6 +822,8 @@ export function KanbanBoard({
 
       <CardDetailDialog
         card={detailCard}
+        slug={slug}
+        projectId={projectId}
         members={members}
         boardLabels={boardLabels}
         canEdit={canEdit}

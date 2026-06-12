@@ -284,4 +284,62 @@ export const boardRouter = router({
       publishBoardChange(input.projectId, { kind: "card.deleted", actorId: ctx.userId });
       return { ok: true };
     }),
+
+  listComments: protectedProcedure
+    .input(z.object({ projectId: z.string(), cardId: z.string() }))
+    .query(async ({ ctx, input }) => {
+      await projectCtxOrThrow(ctx.userId, input.projectId);
+      const comments = await prisma.comment.findMany({
+        where: { cardId: input.cardId, card: { projectId: input.projectId } },
+        orderBy: { createdAt: "asc" },
+        include: { author: { select: { id: true, name: true, email: true } } },
+      });
+      return comments.map((c) => ({
+        id: c.id,
+        body: c.body,
+        createdAt: c.createdAt.toISOString(),
+        authorName: c.author.name ?? c.author.email,
+        mine: c.authorId === ctx.userId,
+      }));
+    }),
+
+  addComment: protectedProcedure
+    .input(
+      z.object({ projectId: z.string(), cardId: z.string(), body: z.string().min(1).max(2000) }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const { membership } = await projectCtxOrThrow(ctx.userId, input.projectId);
+      requireEdit(membership.role);
+      const card = await prisma.card.findUnique({ where: { id: input.cardId } });
+      if (!card || card.projectId !== input.projectId) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Card not found" });
+      }
+      const comment = await prisma.comment.create({
+        data: { cardId: input.cardId, authorId: ctx.userId, body: input.body },
+      });
+      publishBoardChange(input.projectId, { kind: "comment.created", actorId: ctx.userId });
+      return comment;
+    }),
+
+  deleteComment: protectedProcedure
+    .input(z.object({ projectId: z.string(), commentId: z.string() }))
+    .mutation(async ({ ctx, input }) => {
+      await projectCtxOrThrow(ctx.userId, input.projectId);
+      const comment = await prisma.comment.findUnique({
+        where: { id: input.commentId },
+        include: { card: { select: { projectId: true } } },
+      });
+      if (!comment || comment.card.projectId !== input.projectId) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Comment not found" });
+      }
+      if (comment.authorId !== ctx.userId) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "You can only delete your own comments.",
+        });
+      }
+      await prisma.comment.delete({ where: { id: input.commentId } });
+      publishBoardChange(input.projectId, { kind: "comment.deleted", actorId: ctx.userId });
+      return { ok: true };
+    }),
 });

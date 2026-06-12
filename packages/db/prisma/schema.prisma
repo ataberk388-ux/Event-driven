@@ -32,6 +32,7 @@ model User {
   ownedWorkspaces Workspace[] @relation("WorkspaceOwner")
   assignedCards Card[]       @relation("CardAssignee")
   notifications Notification[]
+  comments      Comment[]
 
   @@map("users")
 }
@@ -204,10 +205,26 @@ model Card {
   column   BoardColumn @relation(fields: [columnId], references: [id], onDelete: Cascade)
   assignee User?       @relation("CardAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
   labels   Label[]
+  comments Comment[]
 
   @@index([columnId, position])
   @@index([projectId])
   @@map("cards")
+}
+
+// A comment thread on a card.
+model Comment {
+  id        String   @id @default(cuid())
+  cardId    String
+  authorId  String
+  body      String
+  createdAt DateTime @default(now())
+
+  card   Card @relation(fields: [cardId], references: [id], onDelete: Cascade)
+  author User @relation(fields: [authorId], references: [id], onDelete: Cascade)
+
+  @@index([cardId, createdAt])
+  @@map("comments")
 }
 
 // A reusable colored tag, scoped to a project, attachable to many cards.
