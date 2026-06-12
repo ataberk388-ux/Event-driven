@@ -3,6 +3,7 @@ import pg from "pg";
 import { prisma, OutboxStatus } from "@synapse/db";
 import { toEnvelope, type EventEnvelope } from "@synapse/events";
 import { summarize } from "./summaries.js";
+import { logger } from "./logger.js";
 
 /**
  * Single background worker that replaces Kafka + the per-feature consumer
@@ -19,7 +20,11 @@ type Payload = Record<string, unknown>;
 type Notif = { userId: string; type: string; title: string; link: string };
 
 /** Membership event → a notification for the affected user (or null). */
-function buildNotification(event: EventEnvelope, workspaceName: string, slug: string): Notif | null {
+function buildNotification(
+  event: EventEnvelope,
+  workspaceName: string,
+  slug: string,
+): Notif | null {
   const p = (event.payload ?? {}) as Payload;
   const userId = typeof p.userId === "string" ? p.userId : null;
   if (!userId) return null;
@@ -96,7 +101,9 @@ async function processRow(row: {
       });
     }
     await tx.dailyMetric.upsert({
-      where: { workspaceId_day_eventType: { workspaceId: metricWorkspace, day, eventType: event.type } },
+      where: {
+        workspaceId_day_eventType: { workspaceId: metricWorkspace, day, eventType: event.type },
+      },
       create: { workspaceId: metricWorkspace, day, eventType: event.type, count: 1 },
       update: { count: { increment: 1 } },
     });
@@ -139,10 +146,10 @@ async function drain(): Promise<void> {
               status: attempts >= MAX_ATTEMPTS ? OutboxStatus.FAILED : OutboxStatus.PENDING,
             },
           });
-          console.error(`[worker] failed ${row.id} (attempt ${attempts})`, err);
+          logger.error({ outboxId: row.id, attempts, err }, "failed to process outbox row");
         }
       }
-      if (processed > 0) console.log(`[worker] processed ${processed} event(s)`);
+      if (processed > 0) logger.info({ processed }, "processed outbox events");
       if (processed === 0) break; // no progress (all failed) — avoid a tight loop
     }
   } finally {
@@ -165,7 +172,7 @@ async function main() {
   // Safety net in case a NOTIFY is missed (e.g. during a reconnect).
   setInterval(() => void drain(), SAFETY_POLL_MS);
 
-  console.log("[worker] started — LISTEN outbox_event + safety poll");
+  logger.info("worker started — LISTEN outbox_event + safety poll");
 
   const shutdown = async () => {
     await client.end();
@@ -177,6 +184,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error("[worker] fatal", err);
+  logger.error({ err }, "worker fatal error");
   process.exit(1);
 });

@@ -4,6 +4,7 @@ import { prisma } from "@synapse/db";
 import { router, protectedProcedure } from "../trpc.js";
 import { projectCtxOrThrow, requireEdit } from "../shared/access.js";
 import { publishBoardChange } from "../realtime.js";
+import { matchMentions } from "./mentions.js";
 
 export const boardRouter = router({
   // Full board snapshot: ordered columns, each with its ordered cards.
@@ -337,10 +338,7 @@ export const boardRouter = router({
       });
 
       // @mention → notify matched workspace members (other than the author).
-      const tokens = [...input.body.matchAll(/@([a-zA-Z0-9._-]+)/g)].map((m) =>
-        (m[1] ?? "").toLowerCase(),
-      );
-      if (tokens.length > 0) {
+      if (input.body.includes("@")) {
         const [author, workspace, members] = await Promise.all([
           prisma.user.findUnique({
             where: { id: ctx.userId },
@@ -355,19 +353,15 @@ export const boardRouter = router({
             include: { user: { select: { id: true, name: true, email: true } } },
           }),
         ]);
-        const authorName = author?.name ?? author?.email ?? "Someone";
-        const matched = new Set<string>();
-        for (const m of members) {
-          if (m.user.id === ctx.userId) continue;
-          const first = (m.user.name ?? "").split(/\s+/)[0]?.toLowerCase();
-          const local = m.user.email.split("@")[0]?.toLowerCase();
-          if ((local && tokens.includes(local)) || (first && tokens.includes(first))) {
-            matched.add(m.user.id);
-          }
-        }
-        if (matched.size > 0 && workspace) {
+        const mentioned = matchMentions(
+          input.body,
+          members.map((m) => m.user),
+          ctx.userId,
+        );
+        if (mentioned.length > 0 && workspace) {
+          const authorName = author?.name ?? author?.email ?? "Someone";
           await prisma.notification.createMany({
-            data: [...matched].map((userId) => ({
+            data: mentioned.map((userId) => ({
               userId,
               type: "Mention",
               title: `${authorName} mentioned you on "${card.title}"`,

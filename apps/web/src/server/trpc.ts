@@ -1,4 +1,5 @@
 import { initTRPC, TRPCError } from "@trpc/server";
+import { ZodError } from "zod";
 import { rateLimit } from "@synapse/ratelimit";
 
 /**
@@ -8,7 +9,18 @@ import { rateLimit } from "@synapse/ratelimit";
  */
 export type Context = { userId: string | null };
 
-const t = initTRPC.context<Context>().create();
+const t = initTRPC.context<Context>().create({
+  // Standardize errors: surface structured Zod validation issues to the client.
+  errorFormatter({ shape, error }) {
+    return {
+      ...shape,
+      data: {
+        ...shape.data,
+        zod: error.cause instanceof ZodError ? error.cause.flatten() : null,
+      },
+    };
+  },
+});
 
 export const router = t.router;
 export const publicProcedure = t.procedure;

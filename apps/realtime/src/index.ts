@@ -2,6 +2,7 @@ import "./env.js";
 import { WebSocketServer, WebSocket } from "ws";
 import { Redis } from "ioredis";
 import { handleYjs } from "./yjs.js";
+import { logger } from "./logger.js";
 
 const PORT = Number(process.env.REALTIME_PORT ?? 4100);
 
@@ -89,7 +90,7 @@ sub.on("pmessage", (_pattern, channel, message) => {
   broadcast(boardId, { type: "changed", ...payload });
 });
 
-console.log(`[realtime] WS server listening on ws://localhost:${PORT}`);
+logger.info({ port: PORT }, "realtime WS server listening");
 
 const shutdown = () => {
   wss.close();

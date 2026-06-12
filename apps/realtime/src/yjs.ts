@@ -1,10 +1,16 @@
 import type { WebSocket } from "ws";
 import * as Y from "yjs";
 import * as syncProtocol from "y-protocols/sync";
-import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate, removeAwarenessStates } from "y-protocols/awareness";
+import {
+  Awareness,
+  applyAwarenessUpdate,
+  encodeAwarenessUpdate,
+  removeAwarenessStates,
+} from "y-protocols/awareness";
 import * as encoding from "lib0/encoding";
 import * as decoding from "lib0/decoding";
 import { prisma } from "@synapse/db";
+import { logger } from "./logger.js";
 
 /**
  * Minimal Yjs collaboration server speaking the standard y-websocket wire
@@ -51,7 +57,7 @@ async function persist(name: string, room: Room): Promise<void> {
 function scheduleSave(name: string, room: Room): void {
   if (room.saveTimer) clearTimeout(room.saveTimer);
   room.saveTimer = setTimeout(() => {
-    persist(name, room).catch((e) => console.error("[yjs] persist failed", e));
+    persist(name, room).catch((err) => logger.error({ err, doc: name }, "yjs persist failed"));
   }, SAVE_DEBOUNCE_MS);
 }
 
@@ -68,7 +74,7 @@ function getRoom(name: string): Room {
     .then((row) => {
       if (row?.state) Y.applyUpdate(doc, new Uint8Array(row.state));
     })
-    .catch((e) => console.error("[yjs] load failed", e));
+    .catch((err) => logger.error({ err, doc: name }, "yjs load failed"));
 
   // Persist + fan out every document mutation.
   doc.on("update", (update: Uint8Array, origin: unknown) => {
@@ -77,20 +83,34 @@ function getRoom(name: string): Room {
     const encoder = encoding.createEncoder();
     encoding.writeVarUint(encoder, messageSync);
     syncProtocol.writeUpdate(encoder, update);
-    broadcast(r, encoding.toUint8Array(encoder), origin instanceof Object ? (origin as WebSocket) : undefined);
+    broadcast(
+      r,
+      encoding.toUint8Array(encoder),
+      origin instanceof Object ? (origin as WebSocket) : undefined,
+    );
     scheduleSave(name, r);
   });
 
   // Relay awareness (cursors / who's editing) to everyone else.
-  awareness.on("update", ({ added, updated, removed }: { added: number[]; updated: number[]; removed: number[] }, origin: unknown) => {
-    const r = rooms.get(name);
-    if (!r) return;
-    const changed = [...added, ...updated, ...removed];
-    const encoder = encoding.createEncoder();
-    encoding.writeVarUint(encoder, messageAwareness);
-    encoding.writeVarUint8Array(encoder, encodeAwarenessUpdate(awareness, changed));
-    broadcast(r, encoding.toUint8Array(encoder), origin instanceof Object ? (origin as WebSocket) : undefined);
-  });
+  awareness.on(
+    "update",
+    (
+      { added, updated, removed }: { added: number[]; updated: number[]; removed: number[] },
+      origin: unknown,
+    ) => {
+      const r = rooms.get(name);
+      if (!r) return;
+      const changed = [...added, ...updated, ...removed];
+      const encoder = encoding.createEncoder();
+      encoding.writeVarUint(encoder, messageAwareness);
+      encoding.writeVarUint8Array(encoder, encodeAwarenessUpdate(awareness, changed));
+      broadcast(
+        r,
+        encoding.toUint8Array(encoder),
+        origin instanceof Object ? (origin as WebSocket) : undefined,
+      );
+    },
+  );
 
   rooms.set(name, room);
   return room;
@@ -113,7 +133,10 @@ export async function handleYjs(ws: WebSocket, url: URL): Promise<void> {
   if (states.size > 0) {
     const aEncoder = encoding.createEncoder();
     encoding.writeVarUint(aEncoder, messageAwareness);
-    encoding.writeVarUint8Array(aEncoder, encodeAwarenessUpdate(room.awareness, [...states.keys()]));
+    encoding.writeVarUint8Array(
+      aEncoder,
+      encodeAwarenessUpdate(room.awareness, [...states.keys()]),
+    );
     send(ws, encoding.toUint8Array(aEncoder));
   }
 
@@ -138,7 +161,7 @@ export async function handleYjs(ws: WebSocket, url: URL): Promise<void> {
       // Last editor left — flush state and drop the room from memory.
       if (room.saveTimer) clearTimeout(room.saveTimer);
       persist(name, room)
-        .catch((e) => console.error("[yjs] final persist failed", e))
+        .catch((err) => logger.error({ err, doc: name }, "yjs final persist failed"))
         .finally(() => rooms.delete(name));
     }
   });
