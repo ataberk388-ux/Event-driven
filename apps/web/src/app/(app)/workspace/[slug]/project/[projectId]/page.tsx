@@ -36,6 +36,7 @@ export default async function BoardPage({
             include: {
               assignee: { select: { id: true, name: true, email: true } },
               labels: { select: { id: true, name: true, color: true } },
+              _count: { select: { comments: true } },
             },
           },
         },
@@ -73,6 +74,7 @@ export default async function BoardPage({
       dueDate: card.dueDate ? card.dueDate.toISOString() : null,
       priority: card.priority,
       labels: card.labels.map((l) => ({ id: l.id, name: l.name, color: l.color })),
+      commentCount: card._count.comments,
       assignee: card.assignee
         ? { id: card.assignee.id, name: card.assignee.name, email: card.assignee.email }
         : null,

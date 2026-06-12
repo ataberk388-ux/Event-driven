@@ -46,6 +46,7 @@ import {
   deleteCardAction,
   updateCardAction,
   createColumnAction,
+  reorderColumnsAction,
   loadCommentsAction,
   addCommentAction,
   deleteCommentAction,
@@ -93,6 +94,7 @@ export type CardView = {
   dueDate: string | null;
   priority: Priority;
   labels: LabelView[];
+  commentCount: number;
   assignee: { id: string; name: string | null; email: string } | null;
 };
 export type ColumnView = { id: string; name: string; cards: CardView[] };
@@ -202,6 +204,9 @@ function SortableCard({
           </span>
         )}
         {card.description && <span className="text-xs text-muted-foreground">📝</span>}
+        {card.commentCount > 0 && (
+          <span className="text-xs text-muted-foreground">💬 {card.commentCount}</span>
+        )}
       </div>
       {canEdit && (
         <button
@@ -226,12 +231,18 @@ function SortableCard({
 function Column({
   column,
   canEdit,
+  index,
+  total,
+  onMove,
   onAddCard,
   onDeleteCard,
   onOpenCard,
 }: {
   column: ColumnView;
   canEdit: boolean;
+  index: number;
+  total: number;
+  onMove: (columnId: string, dir: -1 | 1) => void;
   onAddCard: (columnId: string, title: string) => void;
   onDeleteCard: (id: string) => void;
   onOpenCard: (card: CardView) => void;
@@ -250,9 +261,33 @@ function Column({
     <div className="flex w-72 shrink-0 flex-col rounded-lg border bg-muted/30">
       <div className="flex items-center justify-between px-3 py-2">
         <h3 className="text-sm font-semibold">{column.name}</h3>
-        <span className="rounded-full bg-muted px-2 text-xs text-muted-foreground">
-          {column.cards.length}
-        </span>
+        <div className="flex items-center gap-1">
+          {canEdit && (
+            <>
+              <button
+                type="button"
+                disabled={index === 0}
+                onClick={() => onMove(column.id, -1)}
+                className="rounded px-1 text-xs text-muted-foreground hover:bg-muted disabled:opacity-30"
+                aria-label="Move column left"
+              >
+                ◀
+              </button>
+              <button
+                type="button"
+                disabled={index === total - 1}
+                onClick={() => onMove(column.id, 1)}
+                className="rounded px-1 text-xs text-muted-foreground hover:bg-muted disabled:opacity-30"
+                aria-label="Move column right"
+              >
+                ▶
+              </button>
+            </>
+          )}
+          <span className="rounded-full bg-muted px-2 text-xs text-muted-foreground">
+            {column.cards.length}
+          </span>
+        </div>
       </div>
 
       <div ref={setNodeRef} className="flex min-h-2 flex-1 flex-col gap-2 px-3 pb-2">
@@ -329,6 +364,7 @@ function CardDetailDialog({
   const [comments, setComments] = useState<CommentView[]>([]);
   const [commentBody, setCommentBody] = useState("");
   const [, startComment] = useTransition();
+  const router = useRouter();
 
   useEffect(() => {
     if (!card) return;
@@ -360,6 +396,7 @@ function CardDetailDialog({
       const res = await addCommentAction(slug, projectId, card.id, body);
       if (!res.ok) toast.error(res.error);
       reloadComments();
+      router.refresh();
     });
   }
 
@@ -368,6 +405,7 @@ function CardDetailDialog({
       const res = await deleteCommentAction(slug, projectId, id);
       if (!res.ok) toast.error(res.error);
       reloadComments();
+      router.refresh();
     });
   }
 
@@ -718,6 +756,25 @@ export function KanbanBoard({
     });
   }
 
+  function moveColumn(columnId: string, dir: -1 | 1) {
+    const idx = columns.findIndex((c) => c.id === columnId);
+    const target = idx + dir;
+    if (idx < 0 || target < 0 || target >= columns.length) return;
+    const next = arrayMove(columns, idx, target);
+    setColumns(next);
+    startTransition(async () => {
+      const res = await reorderColumnsAction(
+        slug,
+        projectId,
+        next.map((c) => c.id),
+      );
+      if (!res.ok) {
+        toast.error(res.error);
+        router.refresh();
+      }
+    });
+  }
+
   return (
     <>
       <DndContext
@@ -782,11 +839,14 @@ export function KanbanBoard({
         </div>
 
         <div className="flex gap-4 overflow-x-auto pb-4">
-          {displayColumns.map((column) => (
+          {displayColumns.map((column, index) => (
             <Column
               key={column.id}
               column={column}
               canEdit={canEdit}
+              index={index}
+              total={displayColumns.length}
+              onMove={moveColumn}
               onAddCard={addCard}
               onDeleteCard={deleteCard}
               onOpenCard={setDetailCard}

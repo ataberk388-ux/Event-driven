@@ -21,6 +21,7 @@ export const boardRouter = router({
               include: {
                 assignee: { select: { id: true, name: true, email: true, image: true } },
                 labels: { select: { id: true, name: true, color: true } },
+                _count: { select: { comments: true } },
               },
             },
           },
@@ -77,6 +78,23 @@ export const boardRouter = router({
       }
       await prisma.boardColumn.delete({ where: { id: input.columnId } });
       publishBoardChange(input.projectId, { kind: "column.deleted", actorId: ctx.userId });
+      return { ok: true };
+    }),
+
+  reorderColumns: protectedProcedure
+    .input(z.object({ projectId: z.string(), columnIds: z.array(z.string()).min(1) }))
+    .mutation(async ({ ctx, input }) => {
+      const { membership } = await projectCtxOrThrow(ctx.userId, input.projectId);
+      requireEdit(membership.role);
+      await prisma.$transaction(
+        input.columnIds.map((id, position) =>
+          prisma.boardColumn.updateMany({
+            where: { id, projectId: input.projectId },
+            data: { position },
+          }),
+        ),
+      );
+      publishBoardChange(input.projectId, { kind: "columns.reordered", actorId: ctx.userId });
       return { ok: true };
     }),
 
@@ -308,7 +326,7 @@ export const boardRouter = router({
       z.object({ projectId: z.string(), cardId: z.string(), body: z.string().min(1).max(2000) }),
     )
     .mutation(async ({ ctx, input }) => {
-      const { membership } = await projectCtxOrThrow(ctx.userId, input.projectId);
+      const { project, membership } = await projectCtxOrThrow(ctx.userId, input.projectId);
       requireEdit(membership.role);
       const card = await prisma.card.findUnique({ where: { id: input.cardId } });
       if (!card || card.projectId !== input.projectId) {
@@ -317,6 +335,48 @@ export const boardRouter = router({
       const comment = await prisma.comment.create({
         data: { cardId: input.cardId, authorId: ctx.userId, body: input.body },
       });
+
+      // @mention → notify matched workspace members (other than the author).
+      const tokens = [...input.body.matchAll(/@([a-zA-Z0-9._-]+)/g)].map((m) =>
+        (m[1] ?? "").toLowerCase(),
+      );
+      if (tokens.length > 0) {
+        const [author, workspace, members] = await Promise.all([
+          prisma.user.findUnique({
+            where: { id: ctx.userId },
+            select: { name: true, email: true },
+          }),
+          prisma.workspace.findUnique({
+            where: { id: project.workspaceId },
+            select: { slug: true },
+          }),
+          prisma.membership.findMany({
+            where: { workspaceId: project.workspaceId },
+            include: { user: { select: { id: true, name: true, email: true } } },
+          }),
+        ]);
+        const authorName = author?.name ?? author?.email ?? "Someone";
+        const matched = new Set<string>();
+        for (const m of members) {
+          if (m.user.id === ctx.userId) continue;
+          const first = (m.user.name ?? "").split(/\s+/)[0]?.toLowerCase();
+          const local = m.user.email.split("@")[0]?.toLowerCase();
+          if ((local && tokens.includes(local)) || (first && tokens.includes(first))) {
+            matched.add(m.user.id);
+          }
+        }
+        if (matched.size > 0 && workspace) {
+          await prisma.notification.createMany({
+            data: [...matched].map((userId) => ({
+              userId,
+              type: "Mention",
+              title: `${authorName} mentioned you on "${card.title}"`,
+              link: `/workspace/${workspace.slug}/project/${input.projectId}`,
+            })),
+          });
+        }
+      }
+
       publishBoardChange(input.projectId, { kind: "comment.created", actorId: ctx.userId });
       return comment;
     }),

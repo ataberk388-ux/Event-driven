@@ -107,6 +107,22 @@ export async function createColumnAction(
   }
 }
 
+export async function reorderColumnsAction(
+  slug: string,
+  projectId: string,
+  columnIds: string[],
+): Promise<ActionResult> {
+  const api = await client();
+  if (!api) return fail("You must be signed in.");
+  try {
+    await api.board.reorderColumns({ projectId, columnIds });
+    revalidatePath(boardPath(slug, projectId));
+    return ok();
+  } catch (e) {
+    return fail((e as Error).message || "Could not reorder columns.");
+  }
+}
+
 export type CommentView = {
   id: string;
   body: string;
