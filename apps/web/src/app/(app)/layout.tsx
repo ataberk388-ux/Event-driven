@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { GlobalSearch } from "./global-search";
 import { NotificationBell } from "./notification-bell";
+import { CommandPalette } from "./command-palette";
 
 function initials(value: string): string {
   return value
@@ -49,6 +50,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         </div>
       </header>
       <main className="mx-auto max-w-5xl px-6 py-8">{children}</main>
+      <CommandPalette />
     </div>
   );
 }
