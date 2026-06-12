@@ -39,3 +39,6 @@ test-results/
 
 # docker volumes (local data)
 infra/.data/
+
+# claude code (local agent config)
+.claude/
